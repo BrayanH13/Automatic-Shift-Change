@@ -1,0 +1,231 @@
+import requests
+from datetime import datetime, timedelta, timezone
+from requests.auth import HTTPBasicAuth
+import json
+from dotenv import load_dotenv 
+import os
+
+# Carpeta de salida
+output_folder = "Credenciales_Entrega_de_turno"
+summary = os.path.join(output_folder, "resumen.txt")
+
+# Cargar credenciales desde variables de entorno
+load_dotenv("credenciales.env")
+username = os.getenv("JIRA_USER")
+token = os.getenv("JIRA_TOKEN")
+
+# Autenticación
+auth = HTTPBasicAuth(username, token)
+
+# URLs genéricas de JIRA
+JIRA_URL = "https://your-domain.atlassian.net/rest/api/3/search/jql"
+url_field = "https://your-domain.atlassian.net/rest/api/3/field"
+
+# Fechas en formato ISO
+now = datetime.now(timezone.utc)
+incidentes = now - timedelta(hours=24)
+start_vm = now
+end_vm = (now + timedelta(hours=32))
+start = now - timedelta(hours=8)
+end = now  
+
+start_iso = start.strftime('%Y-%m-%dT%H:%M:%S.000+0000')
+end_iso = end.strftime('%Y-%m-%dT%H:%M:%S.000+0000')
+
+# JQL genérico
+jql = f'project = YOUR_PROJECT ORDER BY created DESC'
+
+headers = {
+  "Accept": "application/json",
+  "Content-Type": "application/json"
+}
+
+def extract(jql, headers, auth):
+    next_page_token = None
+    all_issues = []
+    while True:
+        payload = {
+            "jql": jql,
+            "maxResults": 100,
+            "fields": [
+                "created", "summary", "key", "status", "name",
+                "customfield_13649", "customfield_14079",
+                "customfield_12632", "customfield_12633",
+                "customfield_13221","customfield_13506",
+                "customfield_13094","customfield_12877",
+                "customfield_13689","customfield_13207",
+                "customfield_13620","customfield_13134",
+                "customfield_13054","customfield_13126",
+                "customfield_12680","customfield_13128",
+                "customfield_13467"
+            ],
+            "fieldsByKeys": False
+        }
+
+        if next_page_token:
+            payload["nextPageToken"] = next_page_token
+
+        response = requests.post(
+            JIRA_URL,
+            headers=headers,
+            data=json.dumps(payload),
+            auth=auth
+        )
+
+        if response.status_code != 200:
+            print(f"❌ Error {response.status_code}: {response.text}")
+            break
+        data = response.json()
+        issues = data.get("issues", [])
+        all_issues.extend(issues)
+
+        print(f"📄 Página obtenida: {len(issues)} issues")
+
+        next_page_token = data.get("nextPageToken")
+        if not next_page_token:
+            break
+
+    print(f"✅ Total de issues extraídos: {len(all_issues)}")
+    return all_issues
+
+def incidencias(data):
+    i = 0
+    for issue in data:
+        key = issue["key"]
+        summary = issue["fields"]["summary"]
+        status = issue["fields"]["status"]
+        status_value = status.get("name") if status else "No definido"
+        afectacion = issue["fields"]["customfield_13649"]
+        tiempo_afectacion = issue["fields"]["customfield_14079"]
+        hora_inicio = issue["fields"]["customfield_12632"]
+        hora_final = issue["fields"]["customfield_12633"]
+        infraestructura = issue["fields"]["customfield_13221"]
+        afectacion_value = afectacion.get("value") if afectacion else "No definido"
+        noc_responsable = issue["fields"]["customfield_13467"]
+        noc_responsable_value = noc_responsable.get("value") if noc_responsable else "No definido"
+        infraestructura_value = infraestructura.get("value") if infraestructura else "No definido"
+
+        if infraestructura_value == "Incidente Infraestructura" and status_value not in (
+            "Solucionado", "Resuelto", "Cerrado",
+            "En proceso Nivel 3"
+        ) and noc_responsable_value in ("NOC Team A", "NOC Team B"):
+
+            if hora_inicio:
+                inicio_dt = datetime.strptime(hora_inicio, '%Y-%m-%dT%H:%M:%S.000%z')
+                if datetime.now(inicio_dt.tzinfo) - inicio_dt > timedelta(hours=32):
+                    continue
+
+            file.write(f"- Incidencia con afectación, Caso: {key}: {summary} \n")
+            file.write(f"El caso es {afectacion_value} \n")
+            file.write(f"El estado del caso es: {status_value}\n")
+            file.write(f"- Tiempo de Afectación en minutos: {tiempo_afectacion if tiempo_afectacion else 'No especificado'}\n")
+            file.write(f"- Hora de Inicio: {datetime.strptime(hora_inicio, '%Y-%m-%dT%H:%M:%S.000%z').strftime('%A %d de %B de %Y a las %I:%M %p (%Z)') if hora_inicio else 'No especificada'}\n")
+            file.write(f"- Hora Final: {datetime.strptime(hora_final, '%Y-%m-%dT%H:%M:%S.000%z').strftime('%A %d de %B de %Y a las %I:%M %p (%Z)') if hora_final else 'No especificada'}\n\n")
+            i = 1
+
+    if i == 0:
+        file.write(f"\nSin incidentes\n\n")
+
+def vm(data):
+    i = 0
+    for issue in data:
+        vm_obj = issue["fields"]["customfield_13128"]
+        vm = vm_obj.get("value") if isinstance(vm_obj, dict) else vm_obj
+        if vm in ["Preventivo", "Correctivo programado", "Correctivo emergencia"]:
+            hora_inicio = issue["fields"]["customfield_13126"]
+            hora_final = issue["fields"]["customfield_12680"]
+            hora_inicio = datetime.strptime(hora_inicio, "%Y-%m-%dT%H:%M:%S.%f%z")
+            if hora_final is not None:
+                hora_final = datetime.strptime(hora_final, "%Y-%m-%dT%H:%M:%S.%f%z")
+            if start < hora_inicio <= end:
+                key = issue["key"]
+                summary = issue["fields"]["summary"]
+                status = issue["fields"]["status"]["name"]
+                telepuerto = issue["fields"]["customfield_13506"]
+                telepuerto = telepuerto.get("value") if telepuerto else "No definido"
+                ejecuta = issue["fields"]["customfield_13094"]
+                ejecuta = ejecuta.get("displayName") if ejecuta else "No definido"
+                encargado = issue["fields"]["customfield_12877"]
+                encargado = encargado.get("displayName") if encargado else "No definido"
+                sistema = issue["fields"]["customfield_13689"]
+                sistema = sistema.get("value") if sistema else "No definido"
+                motivo = issue["fields"]["customfield_13207"]
+                motivo = motivo['content'][0]['content'][0]['text']
+                plataforma = issue["fields"]["customfield_13620"]
+                resultado = issue["fields"]["customfield_13134"]
+                resultado = resultado.get("value") if resultado else "No definido"
+                plataforma = plataforma.get("value") if isinstance(plataforma, dict) else None
+                satelite = issue["fields"]["customfield_13054"]
+                satelite = satelite.get("value") if isinstance(satelite, dict) else None
+        
+                file.write(f"\nCaso {key} | {summary} | TP {telepuerto} | Sistema {sistema}\n")
+                file.write(f"- Hora de Inicio: {hora_inicio}\n")
+                file.write(f"- Hora Final: {hora_final}\n")
+                file.write(f"- Ingeniero encargado: {encargado if encargado else 'No especificado'}\n")
+                file.write(f"- Ingeniero ejecuta: {ejecuta if ejecuta else 'No especificado'}\n")
+                file.write(f"- Subsistema Operativo: {sistema if sistema else 'No especificado'}\n")                    
+                file.write(f"- Plataforma: {plataforma if plataforma else 'No especificado'}\n")
+                file.write(f"- Satelite: {satelite if satelite else 'No especificado'}\n")
+                file.write(f"- Motivo: {motivo if motivo else 'No especificado'}\n")
+                if resultado == "No definido" and hora_final < now:
+                    file.write(f"REVISAR URGENTEMENTE EL CASO EN EL JIRA Y VALIDAR CON {encargado}\n")
+                else:
+                    file.write(f"-Resultado {resultado} \n")                
+
+def next_vm(data):
+    for issue in data:
+        vm_obj = issue["fields"]["customfield_13128"]
+        vm = vm_obj.get("value") if isinstance(vm_obj, dict) else vm_obj
+        if vm in ["Preventivo", "Correctivo programado", "Correctivo emergencia"]:
+            hora_inicio = issue["fields"]["customfield_13126"]
+            hora_final = issue["fields"]["customfield_12680"]
+            hora_inicio = datetime.strptime(hora_inicio, "%Y-%m-%dT%H:%M:%S.%f%z")
+            if hora_final is not None:
+                hora_final = datetime.strptime(hora_final, "%Y-%m-%dT%H:%M:%S.%f%z")
+            if start_vm < hora_inicio <= end_vm:
+                key = issue["key"]
+                summary = issue["fields"]["summary"]
+                status = issue["fields"]["status"]["name"]
+                telepuerto = issue["fields"]["customfield_13506"]
+                telepuerto = telepuerto.get("value") if telepuerto else "No definido"
+                ejecuta = issue["fields"]["customfield_13094"]
+                ejecuta = ejecuta.get("displayName") if ejecuta else "No definido"
+                encargado = issue["fields"]["customfield_12877"]
+                encargado = encargado.get("displayName") if encargado else "No definido"
+                sistema = issue["fields"]["customfield_13689"]
+                sistema = sistema.get("value") if sistema else "No definido"
+                motivo = issue["fields"]["customfield_13207"]
+                motivo = motivo['content'][0]['content'][0]['text']
+                plataforma = issue["fields"]["customfield_13620"]
+                plataforma = plataforma.get("value") if isinstance(plataforma, dict) else None
+                satelite = issue["fields"]["customfield_13054"]
+                satelite = satelite.get("value") if isinstance(satelite, dict) else None
+
+                file.write(f"\nCaso {key} | {summary} | TP {telepuerto} | Sistema {sistema}\n")
+                file.write(f"- Hora de Inicio: {hora_inicio}\n")
+                file.write(f"- Hora Final: {hora_final}\n")
+                file.write(f"- Ingeniero encargado: {encargado if encargado else 'No especificado'}\n")
+                file.write(f"- Ingeniero ejecuta: {ejecuta if ejecuta else 'No especificado'}\n")
+                file.write(f"- Subsistema Operativo: {sistema if sistema else 'No especificado'}\n")                    
+                file.write(f"- Plataforma: {plataforma if plataforma else 'No especificado'}\n")
+                file.write(f"- Satélite: {satelite if satelite else 'No especificado'}\n")
+                file.write(f"- Motivo: {motivo if motivo else 'No especificado'}\n")
+
+
+# Ejecución principal
+all_issues = extract(jql, headers, auth)
+
+# Crear carpeta si no existe
+if not os.path.exists(output_folder):
+    os.makedirs(output_folder)
+
+with open(summary, "w", encoding="utf-8") as file:
+    file.write("Incidencias con afectación del último turno:\n")
+    incidencias(all_issues)
+    file.write("Ventanas realizadas\n")
+    vm(all_issues)
+    file.write("\nVentanas próximas\n")
+    next_vm(all_issues)
+
+# Abrir archivo generado automáticamente
+os.startfile(summary)
