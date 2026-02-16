@@ -11,12 +11,12 @@ Programa que automatiza el proceso de **entrega de turno** en un NOC, extrayendo
 
 Este proyecto automatiza la entrega de turno en un NOC, extrayendo incidencias y ventanas de mantenimiento desde Jira.
 
-## 🚀 Características
+##  Características
 - Conexión a Jira mediante API REST.
 - Extracción de incidencias y ventanas de mantenimiento.
 - Generación automática de un archivo resumen.
 - Filtrado por estado, responsable y tipo de incidente.
 
-## 📦 Requisitos
+##  Requisitos
 ```bash
 pip install -r requirements.txt
